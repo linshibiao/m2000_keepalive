@@ -25,8 +25,8 @@ logging.basicConfig(
 def check_connectivity():
     try:
         # Use a short timeout for the check
-        response = requests.get(f"http://{CHECK_HOST}", timeout=5)
-        return response.status_code == 200
+        response = requests.head(f"http://{CHECK_HOST}", timeout=5)
+        return response.status_code < 400
     except (requests.ConnectionError, requests.Timeout):
         # Also try a simple socket check if HTTP fails
         try:
