@@ -1,0 +1,13 @@
+[Unit]
+Description=M2000 Hotspot Monitoring and Reboot Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/shibiao/m2000_keepalive/m2000_monitor.py
+Restart=always
+RestartSec=10
+Environment="M2000_PASSWORD=kxPhTH6eJj!96hY"
+Environment="M2000_IP=192.168.0.1"
+
+[Install]
+WantedBy=default.target
