@@ -109,12 +109,13 @@ def main():
             
             if consecutive_failures >= FAILURE_THRESHOLD:
                 logging.error("Failure threshold reached. Initiating M2000 reboot...")
+                # reset the failures count to prevent too frequent reboots.
+                consecutive_failures = 0
                 token = login()
                 if token:
                     if reboot(token):
                         logging.info(f"Waiting {REBOOT_WAIT_TIME}s for reboot...")
                         time.sleep(REBOOT_WAIT_TIME)
-                        consecutive_failures = 0
                         continue
                 
                 logging.error("Reboot process failed. Retrying in next interval.")
