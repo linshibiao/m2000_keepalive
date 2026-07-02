@@ -11,7 +11,7 @@ ADMIN_PASSWORD = os.environ.get("M2000_PASSWORD", "password_here")
 CHECK_INTERVAL = 300  # 5 minutes
 FAILURE_THRESHOLD = 12 # 12 * 5 minutes = 1 hour
 REBOOT_WAIT_TIME = 300  # 5 minutes
-CHECK_HOST = "8.8.8.8"
+CHECK_HOST = "1.1.1.1"
 
 # Logging setup
 logging.basicConfig(
@@ -28,13 +28,16 @@ def check_connectivity():
         response = requests.head(f"http://{CHECK_HOST}", timeout=5)
         return response.status_code < 400
     except (requests.ConnectionError, requests.Timeout):
-        # Also try a simple socket check if HTTP fails
-        try:
-            import socket
-            socket.create_connection((CHECK_HOST, 53), timeout=5)
-            return True
-        except (socket.error, socket.timeout):
-            return False
+        # Also try a socket check on port 80 or 443 if HTTP fails,
+        # avoiding port 53 to prevent false positives from local DNS proxies or VM hosts.
+        for port in [80, 443]:
+            try:
+                import socket
+                socket.create_connection((CHECK_HOST, port), timeout=5)
+                return True
+            except (socket.error, socket.timeout):
+                continue
+        return False
 
 def login():
     payload = {
@@ -67,14 +70,13 @@ def reboot(token):
         "jsonrpc": "2.0",
         "id": 1,
         "method": "system_reboot",
-        "params": {}
-    }
-    headers = {
-        "token": token
+        "params": {
+            "token": token
+        }
     }
     
     try:
-        response = requests.post(M2000_URL, json=payload, headers=headers, timeout=10)
+        response = requests.post(M2000_URL, json=payload, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if "result" in data:

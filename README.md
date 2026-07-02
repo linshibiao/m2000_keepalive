@@ -1,4 +1,11 @@
 # m2000_keepalive
+
+We actually are able to reboot the wifi hotspot:
+shibiao@penguin:~/.gemini/antigravity-cli/brain/5bacc621-36f9-48e6-b883-922624d1d9b8/scratch$ M2000_PASSWORD='kxPhTH6eJj!96hY' python3 -c "import sys; sys.path.append('/home/shibiao/m2000_keepalive'); import m2000_monitor; t=m2000_monitor.login(); m2000_monitor.reboot(t)"
+2026-07-02 00:06:07,085 - INFO - Successfully logged into M2000
+2026-07-02 00:06:07,148 - INFO - Reboot command sent successfully
+
+
 [How to see the logs]
 
 You can see all these events in real-time or by looking at the history using journalctl. The script is designed to log every failure, every login attempt, and every
