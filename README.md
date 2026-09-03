@@ -1,48 +1,81 @@
 # m2000_keepalive
 
-We actually are able to reboot the wifi hotspot:
-shibiao@penguin:~/.gemini/antigravity-cli/brain/5bacc621-36f9-48e6-b883-922624d1d9b8/scratch$ M2000_PASSWORD='kxPhTH6eJj!96hY' python3 -c "import sys; sys.path.append('/home/shibiao/m2000_keepalive'); import m2000_monitor; t=m2000_monitor.login(); m2000_monitor.reboot(t)"
-2026-07-02 00:06:07,085 - INFO - Successfully logged into M2000
-2026-07-02 00:06:07,148 - INFO - Reboot command sent successfully
+Automated monitor and keepalive service for the Inseego MiFi M2000 hotspot. It detects internet outages, verifies local router reachability, and automatically reboots the hotspot via its web JSON-RPC API when connectivity is lost for over an hour.
 
+Manual test reboot:
+```bash
+M2000_PASSWORD='kxPhTH6eJj!96hY' python3 -c "import sys; sys.path.append('/home/shibiao/m2000_keepalive'); import m2000_monitor; t=m2000_monitor.login(); m2000_monitor.reboot(t)"
+```
 
-[How to see the logs]
+---
 
-You can see all these events in real-time or by looking at the history using journalctl. The script is designed to log every failure, every login attempt, and every
-  reboot command.
+## USB Connection / Tethering (Recommended)
 
-  1. See logs in real-time (Follow mode)
-  Run this command to watch the service as it works. It will update automatically whenever a check happens:
+Connecting the Inseego M2000 to the host Chromebook via a **USB-C cable** instead of relying purely on Wi-Fi is strongly recommended:
 
-   1 journalctl --user -u m2000-monitor.service -f
+* **Why:** If the hotspot's Wi-Fi radio crashes, disconnects, or powers down, a Wi-Fi client cannot reach `http://192.168.0.1/` to issue the reboot command. A direct USB tethering connection keeps the network link to the router alive regardless of Wi-Fi state.
+* **No Code Changes Required:** The M2000 uses the same IP (`192.168.0.1`), subnet (`192.168.0.0/24`), and Web API endpoint (`/webapi/`) for both USB tethering and Wi-Fi. ChromeOS automatically detects the USB connection as an Ethernet interface and routes Crostini/Tailscale traffic through it.
+* **Setup on M2000:**
+  1. Connect a USB-C cable between the M2000 and the Chromebook.
+  2. When prompted on the M2000 touch screen, select **"Charge & Tether"** (or in M2000 menu: **Settings** &rarr; **Preferences** &rarr; **USB Mode** &rarr; set to *"Charge & Tether"* / *"Internet access"*).
+  3. ChromeOS will display an **Ethernet** icon in the system status tray.
 
-  2. Search for specific events (History)
-  If you want to see a summary of just the important events (failures and reboots) from the past, use this:
+---
 
-   1 journalctl --user -u m2000-monitor.service | grep -E "failed|reboot|Successfully"
+## Service Management
 
-  What to look for in the logs:
+Manage the systemd user service:
 
-   * Internet Hiccup: You will see a warning like:  
-      WARNING - Connectivity check failed (1/12)  
-      (It will count up to 12 before taking action).
-   * Reboot Triggered: You will see:  
-      ERROR - Failure threshold reached. Initiating M2000 reboot...
-   * Login Status:  
-      INFO - Successfully logged into M2000
-   * Reboot Result:  
-      INFO - Reboot command sent successfully  
-      INFO - Waiting 300s for reboot...
-   * Recovery: When the internet comes back, it logs:  
-      INFO - Connection restored
+```bash
+# Check status
+systemctl --user status m2000-monitor.service
 
-  Example of a "Successful Recovery" log sequence:
+# View live logs
+journalctl --user -u m2000-monitor.service -f
 
-   1 02:00:00 - WARNING - Connectivity check failed (1/12)
-   2 ... (one hour later) ...
-   3 03:00:00 - ERROR - Failure threshold reached. Initiating M2000 reboot...
-   4 03:00:01 - INFO - Successfully logged into M2000
-   5 03:00:01 - INFO - Reboot command sent successfully
-   6 03:00:01 - INFO - Waiting 300s for reboot...
-   7 03:05:01 - INFO - Connection restored
+# Start / Stop / Restart
+systemctl --user start m2000-monitor.service
+systemctl --user stop m2000-monitor.service
+systemctl --user restart m2000-monitor.service
 
+# Enable auto-start on boot
+systemctl --user enable m2000-monitor.service
+```
+
+---
+
+## How to See the Logs
+
+You can see all these events in real-time or by looking at the history using `journalctl`.
+
+### 1. See logs in real-time (Follow mode)
+```bash
+journalctl --user -u m2000-monitor.service -f
+```
+
+### 2. Search for specific events (History)
+```bash
+journalctl --user -u m2000-monitor.service | grep -E "failed|reboot|Successfully|restored"
+```
+
+### What to look for in the logs:
+
+* **Startup & LAN Status:**  
+  `INFO - Starting M2000 monitor. Target IP: 192.168.0.1, Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD)`  
+  `INFO - Local connection to router at 192.168.0.1 is active.`
+
+* **True WAN Outage (Router UP, Internet DOWN):**  
+  `WARNING - Router reachable, but Internet check failed (1/12)`  
+  *(Counts up to 12 checks = 1 hour before initiating reboot)*
+
+* **Wi-Fi / Physical Link Down (Both DOWN):**  
+  `WARNING - Internet check failed (1/12) AND router at 192.168.0.1 is unreachable (local Wi-Fi down or router off).`
+
+* **Reboot Sequence:**  
+  `ERROR - Failure threshold reached and router is reachable. Initiating M2000 reboot...`  
+  `INFO - Successfully logged into M2000`  
+  `INFO - Reboot command sent successfully`  
+  `INFO - Waiting 300s for reboot...`
+
+* **Recovery:**  
+  `INFO - Internet connection restored.`
