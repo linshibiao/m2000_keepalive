@@ -3,15 +3,15 @@ import time
 import logging
 import os
 import sys
+import socket
 
 # Configuration
 M2000_IP = os.environ.get("M2000_IP", "192.168.0.1")
 M2000_URL = f"http://{M2000_IP}/webapi/"
 ADMIN_PASSWORD = os.environ.get("M2000_PASSWORD", "password_here")
-CHECK_INTERVAL = 300  # 5 minutes
-FAILURE_THRESHOLD = 12 # 12 * 5 minutes = 1 hour
-REBOOT_WAIT_TIME = 300  # 5 minutes
-CHECK_HOST = "1.1.1.1"
+CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 300))      # 5 minutes
+FAILURE_THRESHOLD = int(os.environ.get("FAILURE_THRESHOLD", 12))  # 12 * 5 minutes = 1 hour
+REBOOT_WAIT_TIME = int(os.environ.get("REBOOT_WAIT_TIME", 300))   # 5 minutes
 
 # Logging setup
 logging.basicConfig(
@@ -22,24 +22,43 @@ logging.basicConfig(
     ]
 )
 
-def check_connectivity():
+def is_router_reachable():
+    """Check if the local M2000 router at M2000_IP is reachable via TCP port 80."""
     try:
-        # Use a short timeout for the check
-        response = requests.head(f"http://{CHECK_HOST}", timeout=5)
-        return response.status_code < 400
-    except (requests.ConnectionError, requests.Timeout):
-        # Also try a socket check on port 80 or 443 if HTTP fails,
-        # avoiding port 53 to prevent false positives from local DNS proxies or VM hosts.
-        for port in [80, 443]:
-            try:
-                import socket
-                socket.create_connection((CHECK_HOST, port), timeout=5)
-                return True
-            except (socket.error, socket.timeout):
-                continue
+        s = socket.create_connection((M2000_IP, 80), timeout=3)
+        s.close()
+        return True
+    except Exception:
         return False
 
-def login():
+def check_wan_connectivity():
+    """Verify internet connectivity.
+    
+    Uses Cloudflare (1.1.1.1, 1.0.0.1) which explicitly serve HTTP/HTTPS on ports 80/443.
+    Avoids port 53 to prevent false positives from local ChromeOS DNS proxies / virtual bridges.
+    """
+    # 1. Try HTTP HEAD requests to Cloudflare IPs
+    for host in ["1.1.1.1", "1.0.0.1"]:
+        try:
+            response = requests.head(f"http://{host}", timeout=3)
+            if response.status_code in [200, 301, 302]:
+                return True
+        except (requests.ConnectionError, requests.Timeout):
+            pass
+
+    # 2. Fallback to direct TCP socket checks on port 443 (DoH / HTTPS endpoints)
+    for host in ["1.1.1.1", "1.0.0.1", "8.8.8.8"]:
+        try:
+            s = socket.create_connection((host, 443), timeout=3)
+            s.close()
+            return True
+        except (socket.error, socket.timeout):
+            continue
+
+    return False
+
+def login(max_retries=3):
+    """Log in to M2000 and return session token with retries."""
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -49,20 +68,25 @@ def login():
             "pwd": ADMIN_PASSWORD
         }
     }
-    try:
-        response = requests.post(M2000_URL, json=payload, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if "result" in data and "token" in data["result"]:
-                logging.info("Successfully logged into M2000")
-                return data["result"]["token"]
-            else:
-                logging.error(f"Login response missing token: {data}")
-    except Exception as e:
-        logging.error(f"Login request failed: {e}")
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.post(M2000_URL, json=payload, timeout=8)
+            if response.status_code == 200:
+                data = response.json()
+                if "result" in data and "token" in data["result"]:
+                    logging.info("Successfully logged into M2000")
+                    return data["result"]["token"]
+                else:
+                    logging.error(f"Login response missing token: {data}")
+        except Exception as e:
+            logging.warning(f"Login attempt {attempt}/{max_retries} failed: {e}")
+        
+        if attempt < max_retries:
+            time.sleep(3)
     return None
 
 def reboot(token):
+    """Trigger system reboot on M2000 using a valid session token."""
     if not token:
         return False
     
@@ -76,7 +100,7 @@ def reboot(token):
     }
     
     try:
-        response = requests.post(M2000_URL, json=payload, timeout=10)
+        response = requests.post(M2000_URL, json=payload, timeout=8)
         if response.status_code == 200:
             data = response.json()
             if "result" in data:
@@ -89,36 +113,53 @@ def reboot(token):
     return False
 
 def main():
-    consecutive_failures = 0
-    logging.info(f"Starting M2000 monitor. Target IP: {M2000_IP}, Check Host: {CHECK_HOST}")
+    consecutive_wan_failures = 0
+    logging.info(f"Starting M2000 monitor. Target IP: {M2000_IP}, Check Endpoints: 1.1.1.1 / 1.0.0.1 (ports 80, 443)")
     
-    # Check if we can reach the M2000 at all
-    try:
-        requests.get(f"http://{M2000_IP}/", timeout=5)
-    except Exception:
-        logging.error(f"Warning: Cannot reach M2000 at {M2000_IP}. Check connection and IP.")
+    if is_router_reachable():
+        logging.info(f"Local connection to router at {M2000_IP} is active.")
+    else:
+        logging.warning(f"Warning: Cannot reach M2000 at {M2000_IP}. Check Wi-Fi/Ethernet connection and IP.")
 
     while True:
-        if check_connectivity():
-            if consecutive_failures > 0:
-                logging.info("Connection restored")
-            consecutive_failures = 0
+        wan_ok = check_wan_connectivity()
+        router_ok = is_router_reachable()
+
+        if wan_ok:
+            if consecutive_wan_failures > 0:
+                logging.info("Internet connection restored.")
+            consecutive_wan_failures = 0
         else:
-            consecutive_failures += 1
-            logging.warning(f"Connectivity check failed ({consecutive_failures}/{FAILURE_THRESHOLD})")
+            consecutive_wan_failures += 1
             
-            if consecutive_failures >= FAILURE_THRESHOLD:
-                logging.error("Failure threshold reached. Initiating M2000 reboot...")
-                # reset the failures count to prevent too frequent reboots.
-                consecutive_failures = 0
-                token = login()
-                if token:
-                    if reboot(token):
-                        logging.info(f"Waiting {REBOOT_WAIT_TIME}s for reboot...")
-                        time.sleep(REBOOT_WAIT_TIME)
-                        continue
-                
-                logging.error("Reboot process failed. Retrying in next interval.")
+            if not router_ok:
+                logging.warning(
+                    f"Internet check failed ({consecutive_wan_failures}/{FAILURE_THRESHOLD}) "
+                    f"AND router at {M2000_IP} is unreachable (local Wi-Fi down or router off)."
+                )
+            else:
+                logging.warning(
+                    f"Router reachable, but Internet check failed ({consecutive_wan_failures}/{FAILURE_THRESHOLD})"
+                )
+            
+            if consecutive_wan_failures >= FAILURE_THRESHOLD:
+                if not router_ok:
+                    logging.error(
+                        f"Failure threshold reached, but router at {M2000_IP} is unreachable over local network. "
+                        "Cannot send reboot command. Check Wi-Fi or physical connection."
+                    )
+                    consecutive_wan_failures = 0
+                else:
+                    logging.error("Failure threshold reached and router is reachable. Initiating M2000 reboot...")
+                    consecutive_wan_failures = 0
+                    token = login()
+                    if token:
+                        if reboot(token):
+                            logging.info(f"Waiting {REBOOT_WAIT_TIME}s for reboot...")
+                            time.sleep(REBOOT_WAIT_TIME)
+                            continue
+                    
+                    logging.error("Reboot process failed. Retrying in next interval.")
         
         time.sleep(CHECK_INTERVAL)
 
