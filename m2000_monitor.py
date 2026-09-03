@@ -32,12 +32,11 @@ def is_router_reachable():
         return False
 
 def check_wan_connectivity():
-    """Verify internet connectivity.
+    """Verify internet connectivity using minimal bandwidth HTTP HEAD requests.
     
-    Uses Cloudflare (1.1.1.1, 1.0.0.1) which explicitly serve HTTP/HTTPS on ports 80/443.
-    Avoids port 53 to prevent false positives from local ChromeOS DNS proxies / virtual bridges.
+    Uses Cloudflare (1.1.1.1, 1.0.0.1) which explicitly serve HTTP on port 80.
+    A HEAD request only fetches response headers (no body), consuming ~300 bytes per check.
     """
-    # 1. Try HTTP HEAD requests to Cloudflare IPs
     for host in ["1.1.1.1", "1.0.0.1"]:
         try:
             response = requests.head(f"http://{host}", timeout=3)
@@ -45,15 +44,6 @@ def check_wan_connectivity():
                 return True
         except (requests.ConnectionError, requests.Timeout):
             pass
-
-    # 2. Fallback to direct TCP socket checks on port 443 (DoH / HTTPS endpoints)
-    for host in ["1.1.1.1", "1.0.0.1", "8.8.8.8"]:
-        try:
-            s = socket.create_connection((host, 443), timeout=3)
-            s.close()
-            return True
-        except (socket.error, socket.timeout):
-            continue
 
     return False
 
@@ -114,7 +104,7 @@ def reboot(token):
 
 def main():
     consecutive_wan_failures = 0
-    logging.info(f"Starting M2000 monitor. Target IP: {M2000_IP}, Check Endpoints: 1.1.1.1 / 1.0.0.1 (ports 80, 443)")
+    logging.info(f"Starting M2000 monitor. Target IP: {M2000_IP}, Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD)")
     
     if is_router_reachable():
         logging.info(f"Local connection to router at {M2000_IP} is active.")
