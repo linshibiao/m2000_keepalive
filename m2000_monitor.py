@@ -6,12 +6,15 @@ import sys
 import socket
 
 # Configuration
+# Env var names are historical (this project was started for an Inseego M2000).
+# The device in use is a T-Mobile B321MH hotspot at the same API.
 M2000_IP = os.environ.get("M2000_IP", "192.168.0.1")
 M2000_URL = f"http://{M2000_IP}/webapi/"
 ADMIN_PASSWORD = os.environ.get("M2000_PASSWORD", "password_here")
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 300))      # 5 minutes
 FAILURE_THRESHOLD = int(os.environ.get("FAILURE_THRESHOLD", 12))  # 12 * 5 minutes = 1 hour
 REBOOT_WAIT_TIME = int(os.environ.get("REBOOT_WAIT_TIME", 300))   # 5 minutes
+DEVICE_NAME = "B321MH"
 
 # Logging setup
 logging.basicConfig(
@@ -23,7 +26,7 @@ logging.basicConfig(
 )
 
 def is_router_reachable():
-    """Check if the local M2000 router at M2000_IP is reachable via TCP port 80."""
+    """Check if the local B321MH router at M2000_IP is reachable via TCP port 80."""
     try:
         s = socket.create_connection((M2000_IP, 80), timeout=3)
         s.close()
@@ -48,7 +51,7 @@ def check_wan_connectivity():
     return False
 
 def login(max_retries=3):
-    """Log in to M2000 and return session token with retries."""
+    """Log in to the B321MH and return session token with retries."""
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -64,7 +67,7 @@ def login(max_retries=3):
             if response.status_code == 200:
                 data = response.json()
                 if "result" in data and "token" in data["result"]:
-                    logging.info("Successfully logged into M2000")
+                    logging.info(f"Successfully logged into {DEVICE_NAME}")
                     return data["result"]["token"]
                 else:
                     logging.error(f"Login response missing token: {data}")
@@ -76,7 +79,7 @@ def login(max_retries=3):
     return None
 
 def reboot(token):
-    """Trigger system reboot on M2000 using a valid session token."""
+    """Trigger system reboot on the B321MH using a valid session token."""
     if not token:
         return False
     
@@ -104,12 +107,18 @@ def reboot(token):
 
 def main():
     consecutive_wan_failures = 0
-    logging.info(f"Starting M2000 monitor. Target IP: {M2000_IP}, Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD)")
+    logging.info(
+        f"Starting {DEVICE_NAME} monitor. Target IP: {M2000_IP}, "
+        "Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD)"
+    )
     
     if is_router_reachable():
         logging.info(f"Local connection to router at {M2000_IP} is active.")
     else:
-        logging.warning(f"Warning: Cannot reach M2000 at {M2000_IP}. Check Wi-Fi/Ethernet connection and IP.")
+        logging.warning(
+            f"Warning: Cannot reach {DEVICE_NAME} at {M2000_IP}. "
+            "Check Wi-Fi/Ethernet connection and IP."
+        )
 
     while True:
         wan_ok = check_wan_connectivity()
@@ -140,7 +149,10 @@ def main():
                     )
                     consecutive_wan_failures = 0
                 else:
-                    logging.error("Failure threshold reached and router is reachable. Initiating M2000 reboot...")
+                    logging.error(
+                        f"Failure threshold reached and router is reachable. "
+                        f"Initiating {DEVICE_NAME} reboot..."
+                    )
                     consecutive_wan_failures = 0
                     token = login()
                     if token:
