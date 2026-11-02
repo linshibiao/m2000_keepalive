@@ -4,7 +4,9 @@ Simply leave the ChromeOS Linux Terminal window open (you can minimize it or mov
 
 Automated monitor and keepalive service for the **T-Mobile B321MH** hotspot (Tinno “Weymouth”). This repo was originally named for the Inseego MiFi M2000; the B321MH uses the same WebUI JSON-RPC API at `http://192.168.0.1/webapi/`. The service detects internet outages, verifies local router reachability, and automatically reboots the hotspot when connectivity is lost for over an hour.
 
-Environment variables `M2000_IP` and `M2000_PASSWORD` are historical names; they still point at the B321MH.
+It also **logs** when hotspot Wi-Fi looks down (no Wi-Fi clients, Wi-Fi disabled, or `WIFI_CHECK_IPS` missing from the client list). That does **not** trigger a reboot yet, because USB tethering can still have internet while Wi-Fi-only devices (security cameras, etc.) are offline.
+
+Environment variables `M2000_IP` and `M2000_PASSWORD` are historical names; they still point at the B321MH. `WIFI_CHECK_IPS` defaults to `192.168.0.128` (comma-separated).
 
 Manual test reboot (uses the password already set in the systemd unit environment):
 
@@ -67,7 +69,7 @@ journalctl --user -u m2000-monitor.service | grep -E "failed|reboot|Successfully
 ### What to look for in the logs:
 
 * **Startup & LAN Status:**  
-  `INFO - Starting B321MH monitor. Target IP: 192.168.0.1, Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD)`  
+  `INFO - Starting B321MH monitor. Target IP: 192.168.0.1, Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD), Wi-Fi watch IPs: ['192.168.0.128']`  
   `INFO - Local connection to router at 192.168.0.1 is active.`
 
 * **True WAN Outage (Router UP, Internet DOWN):**  
@@ -85,3 +87,10 @@ journalctl --user -u m2000-monitor.service | grep -E "failed|reboot|Successfully
 
 * **Recovery:**  
   `INFO - Internet connection restored.`
+
+* **Wi-Fi down (report only, no reboot):**  
+  `WARNING - Wi-Fi appears down (no Wi-Fi clients). Internet/USB may still be up; not rebooting for this.`  
+  `WARNING - Wi-Fi device(s) not associated: 192.168.0.128. Not rebooting for this.`
+
+* **Wi-Fi restored:**  
+  `INFO - Wi-Fi restored. N Wi-Fi client(s): ...`

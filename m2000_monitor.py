@@ -15,6 +15,12 @@ CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 300))      # 5 minutes
 FAILURE_THRESHOLD = int(os.environ.get("FAILURE_THRESHOLD", 12))  # 12 * 5 minutes = 1 hour
 REBOOT_WAIT_TIME = int(os.environ.get("REBOOT_WAIT_TIME", 300))   # 5 minutes
 DEVICE_NAME = "B321MH"
+# Wi-Fi-only devices to mention in logs (USB cannot reach these). Comma-separated.
+WIFI_CHECK_IPS = [
+    ip.strip()
+    for ip in os.environ.get("WIFI_CHECK_IPS", "192.168.0.128").split(",")
+    if ip.strip()
+]
 
 # Logging setup
 logging.basicConfig(
@@ -50,7 +56,7 @@ def check_wan_connectivity():
 
     return False
 
-def login(max_retries=3):
+def login(max_retries=3, quiet=False):
     """Log in to the B321MH and return session token with retries."""
     payload = {
         "jsonrpc": "2.0",
@@ -67,7 +73,8 @@ def login(max_retries=3):
             if response.status_code == 200:
                 data = response.json()
                 if "result" in data and "token" in data["result"]:
-                    logging.info(f"Successfully logged into {DEVICE_NAME}")
+                    if not quiet:
+                        logging.info(f"Successfully logged into {DEVICE_NAME}")
                     return data["result"]["token"]
                 else:
                     logging.error(f"Login response missing token: {data}")
@@ -105,11 +112,58 @@ def reboot(token):
         logging.error(f"Reboot request failed: {e}")
     return False
 
+def api_call(token, method, extra_params=None):
+    params = {"token": token}
+    if extra_params:
+        params.update(extra_params)
+    response = requests.post(
+        M2000_URL,
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        timeout=8,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return data.get("result") or {}
+
+def get_wifi_status():
+    """Read hotspot Wi-Fi AP state via JSON-RPC (works over USB). Ping is not used:
+    USB clients cannot reach Wi-Fi clients on this hotspot.
+    """
+    token = login(quiet=True)
+    if not token:
+        return None
+    statusbar = api_call(token, "status_get_statusbar_info").get("statusbar_info") or {}
+    devices = api_call(token, "connectivity_get_connected_devices").get("connected_devices") or []
+    wifi_clients = []
+    for dev in devices:
+        if dev.get("tethering_type") == 1:
+            continue
+        ip = (dev.get("ipAddr") or "").split("/")[0]
+        wifi_clients.append({"ip": ip, "name": dev.get("name") or "*"})
+    missing = []
+    present_ips = {c["ip"] for c in wifi_clients}
+    for ip in WIFI_CHECK_IPS:
+        if ip not in present_ips:
+            missing.append(ip)
+    enabled = bool(statusbar.get("wifi_enabled", 1))
+    ap_down = (not enabled) or (len(wifi_clients) == 0)
+    return {
+        "enabled": enabled,
+        "wifi_clients": wifi_clients,
+        "missing_check_ips": missing,
+        "ap_down": ap_down,
+    }
+
 def main():
     consecutive_wan_failures = 0
+    wifi_was_down = False
+    wifi_missing_was = set()
     logging.info(
         f"Starting {DEVICE_NAME} monitor. Target IP: {M2000_IP}, "
-        "Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD)"
+        "Check Endpoints: 1.1.1.1 / 1.0.0.1 (port 80 HEAD), "
+        f"Wi-Fi watch IPs: {WIFI_CHECK_IPS or 'none'}"
     )
     
     if is_router_reachable():
@@ -123,6 +177,48 @@ def main():
     while True:
         wan_ok = check_wan_connectivity()
         router_ok = is_router_reachable()
+
+        if router_ok:
+            try:
+                wifi = get_wifi_status()
+            except Exception as e:
+                logging.warning(f"Wi-Fi status check failed: {e}")
+                wifi = None
+            if wifi is not None:
+                if wifi["ap_down"]:
+                    if not wifi_was_down:
+                        reasons = []
+                        if not wifi["enabled"]:
+                            reasons.append("hotspot Wi-Fi is disabled")
+                        if len(wifi["wifi_clients"]) == 0:
+                            reasons.append("no Wi-Fi clients")
+                        logging.warning(
+                            "Wi-Fi appears down (" + "; ".join(reasons) + "). "
+                            "Internet/USB may still be up; not rebooting for this."
+                        )
+                    wifi_was_down = True
+                elif wifi_was_down:
+                    names = [
+                        f"{c['ip']}" + (f" ({c['name']})" if c["name"] not in ("", "*") else "")
+                        for c in wifi["wifi_clients"]
+                    ]
+                    logging.info(
+                        f"Wi-Fi restored. {len(wifi['wifi_clients'])} Wi-Fi client(s): "
+                        + (", ".join(names) if names else "none")
+                    )
+                    wifi_was_down = False
+
+                missing = set(wifi["missing_check_ips"])
+                newly_missing = missing - wifi_missing_was
+                if newly_missing:
+                    logging.warning(
+                        "Wi-Fi device(s) not associated: " + ", ".join(sorted(newly_missing))
+                        + ". Not rebooting for this."
+                    )
+                returned = wifi_missing_was - missing
+                if returned:
+                    logging.info("Wi-Fi device(s) back: " + ", ".join(sorted(returned)))
+                wifi_missing_was = missing
 
         if wan_ok:
             if consecutive_wan_failures > 0:
