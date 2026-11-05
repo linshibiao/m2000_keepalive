@@ -1,0 +1,32 @@
+---
+description: How to SSH into willowchromebook-penguin (host that runs m2000-monitor)
+alwaysApply: true
+---
+
+# SSH: willowchromebook-penguin
+
+Crostini Linux on the Chromebook that runs `m2000-monitor.service`. Reachable over **Tailscale**, not LAN mDNS.
+
+| | |
+|---|---|
+| Tailscale name | `willowchromebook-penguin` |
+| Tailscale IP | `100.69.70.24` |
+| SSH port | **2222** (port 22 is closed) |
+| User | `shibiao` |
+| Auth | Mac `~/.ssh/id_rsa` (BatchMode works from the Mac) |
+
+```bash
+ssh -p 2222 -o BatchMode=yes shibiao@100.69.70.24
+```
+
+Also: `willowchromebook-penguin.tail0eb5c4.ts.net` (use `-p 2222`). If connecting via Kali as a jump, still use port 2222 on the Chromebook; Kali itself is `ssh kali` (192.168.86.51).
+
+Service path / logs:
+
+```bash
+# on penguin
+systemctl --user status m2000-monitor.service
+journalctl --user -u m2000-monitor.service --since "7 days ago"
+```
+
+Code on device: `/home/shibiao/m2000_keepalive/`
